@@ -8,15 +8,21 @@ import multiprocessing as mp
 import os
 import torch
 import random
+import logging
 # fmt: off
 import sys
+from pathlib import Path
+
 sys.path.insert(1, os.path.join(sys.path[0], '..'))
 # fmt: on
+
+from panoptic_manipulation import pull_instanceinfo
 
 import time
 import cv2
 import numpy as np
 import tqdm
+import json
 
 from detectron2.config import get_cfg
 from detectron2.data.detection_utils import read_image
@@ -97,42 +103,90 @@ if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)
     args = get_parser().parse_args()
     setup_logger(name="fvcore")
+
     logger = setup_logger()
-    logger.info("Arguments: " + str(args))
+    # logger.info("Arguments: " + str(args))
 
     cfg = setup_cfg(args)
 
-    demo = VisualizationDemo(cfg)
+    demo = VisualizationDemo(cfg, parallel=True)
+    # logger.info("Config metadata: {}".format(demo.metadata))
 
     if args.input:
         for path in tqdm.tqdm(args.input, disable=not args.output):
+            output_singlefilename = Path(path).stem
             # use PIL, to be consistent with evaluation
                 
             img = read_image(path, format="BGR")
             start_time = time.time()
-            predictions, visualized_output = demo.run_on_image(img, args.task)
-            logger.info(
-                "{}: {} in {:.2f}s".format(
-                    path,
-                    "detected {} instances".format(len(predictions["instances"]))
-                    if "instances" in predictions
-                    else "finished",
-                    time.time() - start_time,
+
+            opath = os.path.join(args.output, 'panoptic_inference')
+            out_data_filename = opath + '_data'
+            counts_out = os.path.join(out_data_filename, output_singlefilename + '_count.json')
+            if not os.path.exists(counts_out):
+                predictions, visualized_output, img_info = demo.run_on_image(img, args.task)
+                # logger.info("Predictions: {}".format(predictions))
+                # logger.info("Prediction PANO: {}".format(predictions['panoptic_seg']))
+                # logger.info("New Metadata: {}".format(demo.metadata))
+
+                counts, counts_area = pull_instanceinfo(
+                    predictions['panoptic_seg'][1],
+                    demo.metadata.stuff_classes,
+                    img_info
                 )
-            )
-            if args.output:
-                if len(args.input) == 1:
-                    for k in visualized_output.keys():
-                        os.makedirs(k, exist_ok=True)
-                        out_filename = os.path.join(k, args.output)
-                        visualized_output[k].save(out_filename)    
+
+                # logger.info("Prediction Information: {}".format(counts))
+                # logger.info("Prediction Areas {}".format(counts_area))
+                # logger.info(
+                #     "{}: {} in {:.2f}s".format(
+                #         path,
+                #         "detected {} instances".format(len(predictions["instances"]))
+                #         if "instances" in predictions
+                #         else "finished",
+                #         time.time() - start_time,
+                #     )
+                # )
+                if args.output:
+                    # logger.info("Args: {}".format(args.input))
+                    # logger.info("Visualized Output: {}".format(visualized_output))
+
+                    if len(args.input) == 1:
+                        for k in visualized_output.keys():
+                            os.makedirs(k, exist_ok=True)
+                            out_filename = os.path.join(k, args.output)
+                            
+                            out_data_filename = os.path.join(k, args.output + '_data')
+
+                            counts_out = os.path.join(out_data_filename, output_singlefilename + '_count.json')
+                            with open(counts_out, "w") as outfile:
+                                json.dump(counts, outfile)
+
+                            areas_out = os.path.join(out_data_filename, output_singlefilename + '_area.json')
+                            with open(areas_out, "w") as outfile:
+                                json.dump(counts_area, outfile)
+
+                            visualized_output[k].save(out_filename)    
+                    else:
+                        for k in visualized_output.keys():
+                            opath = os.path.join(args.output, k)    
+                            os.makedirs(opath, exist_ok=True)
+                            out_filename = os.path.join(opath, os.path.basename(path))
+                            visualized_output[k].save(out_filename)    
+                            
+                            out_data_filename = opath + '_data'
+                            os.makedirs(out_data_filename, exist_ok=True)
+
+                            counts_out = os.path.join(out_data_filename, output_singlefilename + '_count.json')
+
+                            with open(counts_out, "w") as outfile:
+                                json.dump(counts, outfile)
+
+                            areas_out = os.path.join(out_data_filename, output_singlefilename + '_area.json')
+                            with open(areas_out, "w") as outfile:
+                                json.dump(counts_area, outfile)
                 else:
-                    for k in visualized_output.keys():
-                        opath = os.path.join(args.output, k)    
-                        os.makedirs(opath, exist_ok=True)
-                        out_filename = os.path.join(opath, os.path.basename(path))
-                        visualized_output[k].save(out_filename)    
+                    raise ValueError("Please specify an output path!")
             else:
-                raise ValueError("Please specify an output path!")
+                pass
     else:
         raise ValueError("No Input Given")
